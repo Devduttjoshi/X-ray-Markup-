@@ -1,0 +1,6 @@
+{
+  "name": "X-ray Analyzer & HKA Axis Plotter",
+  "description": "An advanced orthopaedic X-ray analysis tool using AI to detect Hip-Knee-Ankle (HKA) landmarks, plot mechanical axes, allow interactive adjustments, and export results.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
