@@ -1,0 +1,89 @@
+@echo off
+:: Setup script for Lower Limb Mechanical Alignment Analyzer on Windows
+:: This script configures a Python virtual environment, installs dependencies,
+:: and sets up execution for the native offline desktop GUI application.
+
+echo =======================================================================
+echo 🏥 LOWER LIMB MECHANICAL ALIGNMENT ANALYZER - WINDOWS SETUP SCRIPT
+echo =======================================================================
+echo.
+
+:: Step 1: Check Python installation
+echo [1/3] Checking Python installation...
+where python >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Python was not found on your system PATH.
+    echo Please download and install Python 3.10+ from https://www.python.org/
+    echo Make sure to check the box "Add Python to PATH" during installation.
+    pause
+    exit /b 1
+)
+python --version
+echo [SUCCESS] Python is installed.
+echo.
+
+:: Step 2: Set up Python Virtual Environment (venv)
+echo [2/3] Creating Python Virtual Environment (venv) in local folder...
+if not exist "venv" (
+    python -m venv venv
+    if %errorlevel% neq 0 (
+        echo [ERROR] Failed to create virtual environment.
+        pause
+        exit /b 1
+    )
+    echo [SUCCESS] Virtual environment 'venv' created.
+) else (
+    echo [INFO] Virtual environment 'venv' already exists.
+)
+
+echo Activating Python virtual environment...
+call venv\Scripts\activate.bat
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to activate virtual environment.
+    pause
+    exit /b 1
+)
+echo.
+
+:: Step 3: Install Python packages
+echo [3/3] Installing Python dependencies from requirements.txt...
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to install Python dependencies.
+    pause
+    exit /b 1
+)
+echo [SUCCESS] Python dependencies installed successfully.
+echo.
+
+echo =======================================================================
+echo 🎉 SETUP COMPLETED SUCCESSFULLY!
+echo =======================================================================
+echo.
+echo You can run the application locally in two ways:
+echo.
+echo OPTION A: Run via Python Script (Immediate launch)
+echo -----------------------------------------------------------------------
+echo 1. Run the application:
+echo    python lower_limb_analyzer.py
+echo.
+echo OPTION B: Compile into a single standalone Windows .exe file
+echo -----------------------------------------------------------------------
+echo 1. Compile the app using PyInstaller (creates a double-clickable .exe):
+echo    pyinstaller --onefile --noconsole --name="Lower_Limb_Analyzer" lower_limb_analyzer.py
+echo 2. Find your single-file executable in the 'dist' subfolder as:
+echo    dist\Lower_Limb_Analyzer.exe
+echo.
+echo Press any key to run the application now (or Close this window)...
+pause
+
+:: Ask if they want to run the app right away
+set /p RUN_NOW="Do you want to run the application now? (y/n): "
+if /i "%RUN_NOW%" equ "y" (
+    echo.
+    echo Starting Lower Limb Mechanical Alignment Analyzer...
+    python lower_limb_analyzer.py
+)
+
+exit /b 0
