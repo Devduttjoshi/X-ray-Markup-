@@ -19,12 +19,16 @@ import {
   Activity,
   ChevronDown,
   ChevronUp,
-  Settings
+  Settings,
+  Scissors,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
 import { sampleCases, generateSyntheticScanogram } from "./utils/samples";
 import { LegPoints, Point, Calibration, Point13, Points13State, SecurityStatus } from "./types";
 import SystemSettings from "./components/SystemSettings";
 import WorkstationLockScreen from "./components/WorkstationLockScreen";
+import PostOpComplicationsHub from "./components/PostOpComplicationsHub";
 
 // Helper to generate the default 13 anatomical landmarks from standard hip/knee/ankle coords
 const getInitial13Points = (left: LegPoints, right: LegPoints): Points13State => {
@@ -51,9 +55,19 @@ export default function App() {
   // Security & Settings Workstation States
   const [securityStatus, setSecurityStatus] = useState<SecurityStatus | null>(null);
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [workstationMode, setWorkstationMode] = useState<"alignment" | "complications">("alignment");
+
+  // Window width tracking for auto adjust fitting
+  const [windowWidth, setWindowWidth] = useState<number>(typeof window !== "undefined" ? window.innerWidth : 1200);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Case States
-  const [selectedCaseId, setSelectedCaseId] = useState<string>("case-neutral");
+  const [selectedCaseId, setSelectedCaseId] = useState<string>("");
   const [customImage, setCustomImage] = useState<string | null>(null);
   const [customImageName, setCustomImageName] = useState<string>("");
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
@@ -61,16 +75,41 @@ export default function App() {
   const [offlineStatusMsg, setOfflineStatusMsg] = useState<string>("");
 
   // Active coordinates state
-  const [leftLeg, setLeftLeg] = useState<LegPoints>(sampleCases[0].leftLeg);
-  const [rightLeg, setRightLeg] = useState<LegPoints>(sampleCases[0].rightLeg);
-  const [clinicalObservation, setClinicalObservation] = useState<string>(sampleCases[0].clinicalObservation);
+  const [leftLeg, setLeftLeg] = useState<LegPoints>({
+    detected: false,
+    hip: { id: "l-hip", name: "hip" as const, label: "H", anatomicalName: "Left Hip Center", x: 0, y: 0, color: "" },
+    knee: { id: "l-knee", name: "knee" as const, label: "K", anatomicalName: "Left Knee Center", x: 0, y: 0, color: "" },
+    ankle: { id: "l-ankle", name: "ankle" as const, label: "A", anatomicalName: "Left Ankle Center", x: 0, y: 0, color: "" }
+  });
+  const [rightLeg, setRightLeg] = useState<LegPoints>({
+    detected: false,
+    hip: { id: "r-hip", name: "hip" as const, label: "H", anatomicalName: "Right Hip Center", x: 0, y: 0, color: "" },
+    knee: { id: "r-knee", name: "knee" as const, label: "K", anatomicalName: "Right Knee Center", x: 0, y: 0, color: "" },
+    ankle: { id: "r-ankle", name: "ankle" as const, label: "A", anatomicalName: "Right Ankle Center", x: 0, y: 0, color: "" }
+  });
+  const [clinicalObservation, setClinicalObservation] = useState<string>("");
 
   // Interaction States & Drag-Drop Mode
   const [alignmentMode, setAlignmentMode] = useState<"HKA" | "FULL">("HKA");
-  const [activeDrag, setActiveDrag] = useState<{ mode: "HKA" | "FULL"; pointId: string } | null>(null);
+  const [activeDrag, setActiveDrag] = useState<{ mode: "HKA" | "FULL" | "OSTEOTOMY"; pointId: string } | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
-  const [points13, setPoints13] = useState<Points13State>(() => getInitial13Points(sampleCases[0].leftLeg, sampleCases[0].rightLeg));
+  const [points13, setPoints13] = useState<Points13State>(() => getInitial13Points(
+    { detected: false, hip: { id: "l-hip", name: "hip" as const, label: "H", anatomicalName: "Left Hip Center", x: 0, y: 0, color: "" }, knee: { id: "l-knee", name: "knee" as const, label: "K", anatomicalName: "Left Knee Center", x: 0, y: 0, color: "" }, ankle: { id: "l-ankle", name: "ankle" as const, label: "A", anatomicalName: "Left Ankle Center", x: 0, y: 0, color: "" } },
+    { detected: false, hip: { id: "r-hip", name: "hip" as const, label: "H", anatomicalName: "Right Hip Center", x: 0, y: 0, color: "" }, knee: { id: "r-knee", name: "knee" as const, label: "K", anatomicalName: "Right Knee Center", x: 0, y: 0, color: "" }, ankle: { id: "r-ankle", name: "ankle" as const, label: "A", anatomicalName: "Right Ankle Center", x: 0, y: 0, color: "" } }
+  ));
   const [showGuide, setShowGuide] = useState<boolean>(true);
+
+  // Collapsable Right Sidebar State
+  const [showRightSidebar, setShowRightSidebar] = useState<boolean>(true);
+
+  // Osteotomy Simulation States
+  const [osteotomyActive, setOsteotomyActive] = useState<boolean>(false);
+  const [osteotomyLeg, setOsteotomyLeg] = useState<"left" | "right">("right");
+  const [correctionAngle, setCorrectionAngle] = useState<number>(0);
+  const [osteotomyPoints, setOsteotomyPoints] = useState<Array<{ x: number; y: number }>>([
+    { x: 34.0, y: 58.0 }, // Hinge (Point 1)
+    { x: 40.0, y: 58.0 }, // Opposite cortex cut line end (Point 2)
+  ]);
 
   const [showAxes, setShowAxes] = useState<boolean>(true);
   const [showGrid, setShowGrid] = useState<boolean>(false);
@@ -189,12 +228,59 @@ export default function App() {
     };
   };
 
-  const rightMetrics = calculateMetrics(rightLeg, "right");
-  const leftMetrics = calculateMetrics(leftLeg, "left");
+  // --- Osteotomy Point Rotation Utility ---
+  const rotatePoint = (pt: { x: number; y: number }, hinge: { x: number; y: number }, angleDeg: number): { x: number; y: number } => {
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const dx = pt.x - hinge.x;
+    const dy = pt.y - hinge.y;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+    return {
+      x: parseFloat((dx * cos - dy * sin + hinge.x).toFixed(2)),
+      y: parseFloat((dx * sin + dy * cos + hinge.y).toFixed(2)),
+    };
+  };
+
+  // Compute rotated points dynamically based on the active osteotomy correction plan
+  const getRotatedLegPoints = (leg: LegPoints, isLegActive: boolean): LegPoints => {
+    if (!osteotomyActive || !isLegActive || osteotomyPoints.length === 0) return leg;
+    const hinge = osteotomyPoints[0];
+    return {
+      ...leg,
+      hip: leg.hip.y > hinge.y ? { ...leg.hip, ...rotatePoint(leg.hip, hinge, correctionAngle) } : leg.hip,
+      knee: leg.knee.y > hinge.y ? { ...leg.knee, ...rotatePoint(leg.knee, hinge, correctionAngle) } : leg.knee,
+      ankle: leg.ankle.y > hinge.y ? { ...leg.ankle, ...rotatePoint(leg.ankle, hinge, correctionAngle) } : leg.ankle,
+    };
+  };
+
+  const getRotatedPoints13 = (points: Points13State): Points13State => {
+    if (!osteotomyActive || osteotomyPoints.length === 0) return points;
+    const hinge = osteotomyPoints[0];
+    const prefix = osteotomyLeg === "left" ? "l-" : "r-";
+    const updated = { ...points };
+    Object.keys(updated).forEach((key) => {
+      if (key.startsWith(prefix)) {
+        const p = updated[key as keyof Points13State];
+        if (p && p.y > hinge.y) {
+          updated[key as keyof Points13State] = {
+            ...p,
+            ...rotatePoint(p, hinge, correctionAngle),
+          };
+        }
+      }
+    });
+    return updated;
+  };
+
+  const rightLegRotated = getRotatedLegPoints(rightLeg, osteotomyLeg === "right");
+  const leftLegRotated = getRotatedLegPoints(leftLeg, osteotomyLeg === "left");
+  const points13Rotated = getRotatedPoints13(points13);
+
+  const rightMetrics = calculateMetrics(rightLegRotated, "right");
+  const leftMetrics = calculateMetrics(leftLegRotated, "left");
 
   // --- 13-Point Orthopaedic Mathematical Engine ---
-  const calculate13PointMetrics = () => {
-    const p = points13;
+  const calculate13PointMetrics = (p: Points13State = points13Rotated) => {
     
     // Right Leg Centers
     const r_kc = { x: (p["r-lfc"].x + p["r-mfc"].x) / 2, y: (p["r-lfc"].y + p["r-mfc"].y) / 2 };
@@ -350,6 +436,11 @@ export default function App() {
       return "severe";
     };
 
+    if (selectedCaseId === "") {
+      setClinicalObservation("No patient scan loaded. Please select a case study or upload a local digital scanogram (X-ray) to initialize biomechanical alignment and generate a live radiological analysis.");
+      return;
+    }
+
     if (alignmentMode === "HKA") {
       const rSev = getSeverity(rightMetrics.devDegrees);
       const lSev = getSeverity(leftMetrics.devDegrees);
@@ -437,6 +528,7 @@ export default function App() {
       setClinicalObservation(desc);
     }
   }, [
+    selectedCaseId,
     alignmentMode,
     rightLeg, 
     leftLeg, 
@@ -458,6 +550,24 @@ export default function App() {
       if (customImage) {
         // Keep custom state
       }
+    } else if (selectedCaseId === "") {
+      const emptyL: LegPoints = {
+        detected: false,
+        hip: { id: "l-hip", name: "hip" as const, label: "H", anatomicalName: "Left Hip Center", x: 0, y: 0, color: "" },
+        knee: { id: "l-knee", name: "knee" as const, label: "K", anatomicalName: "Left Knee Center", x: 0, y: 0, color: "" },
+        ankle: { id: "l-ankle", name: "ankle" as const, label: "A", anatomicalName: "Left Ankle Center", x: 0, y: 0, color: "" }
+      };
+      const emptyR: LegPoints = {
+        detected: false,
+        hip: { id: "r-hip", name: "hip" as const, label: "H", anatomicalName: "Right Hip Center", x: 0, y: 0, color: "" },
+        knee: { id: "r-knee", name: "knee" as const, label: "K", anatomicalName: "Right Knee Center", x: 0, y: 0, color: "" },
+        ankle: { id: "r-ankle", name: "ankle" as const, label: "A", anatomicalName: "Right Ankle Center", x: 0, y: 0, color: "" }
+      };
+      setLeftLeg(emptyL);
+      setRightLeg(emptyR);
+      setPoints13(getInitial13Points(emptyL, emptyR));
+      setCalibration(prev => ({ ...prev, active: false, point1: null, point2: null }));
+      setOfflineStatusMsg("");
     } else {
       const kase = sampleCases.find((c) => c.id === selectedCaseId);
       if (kase) {
@@ -550,6 +660,16 @@ export default function App() {
 
     const roundedX = parseFloat(x.toFixed(2));
     const roundedY = parseFloat(y.toFixed(2));
+
+    if (activeDrag.mode === "OSTEOTOMY") {
+      const idx = activeDrag.pointId === "ost-0" ? 0 : 1;
+      setOsteotomyPoints((prev) => {
+        const next = [...prev];
+        next[idx] = { x: roundedX, y: roundedY };
+        return next;
+      });
+      return;
+    }
 
     if (activeDrag.mode === "HKA") {
       const isLeft = activeDrag.pointId.startsWith("l-");
@@ -1218,28 +1338,147 @@ export default function App() {
   return (
     <div id="ortho-app-container" className="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col overflow-x-hidden selection:bg-cyan-500/30">
       
-      {/* Pristine Decluttered Header Navigation */}
-      <nav id="navbar" className="h-16 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between px-6 shrink-0 z-20">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 bg-cyan-600 rounded flex items-center justify-center">
+      {/* Consolidated Minimalist Top Control Bar */}
+      <nav id="navbar" className="min-h-16 border-b border-slate-800 bg-slate-900/45 flex flex-wrap items-center justify-between px-6 py-3 md:py-0 shrink-0 z-20 gap-4">
+        
+        {/* Left Side: Brand and Offline Tag */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-cyan-600 rounded flex items-center justify-center shadow-[0_0_8px_rgba(8,182,212,0.35)]">
             <Maximize2 className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="text-md font-semibold tracking-tight text-white flex items-center gap-1.5">
-              OrthoScan <span className="text-slate-400 font-mono text-[10px] bg-slate-800 px-1 py-0.5 rounded border border-slate-700">Offline Edition</span>
+            <h1 className="text-sm font-semibold tracking-tight text-white flex items-center gap-1.5">
+              OrthoScan <span className="text-slate-400 font-mono text-[9px] bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">Workstation</span>
             </h1>
+          </div>
+
+          {/* Workstation Mode Switcher */}
+          <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800 ml-2 shrink-0">
+            <button
+              onClick={() => setWorkstationMode("alignment")}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase transition-all ${
+                workstationMode === "alignment"
+                  ? "bg-cyan-900/60 text-cyan-300 border border-cyan-500/25"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              Pre-Op Align
+            </button>
+            <button
+              onClick={() => setWorkstationMode("complications")}
+              className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase transition-all flex items-center gap-1 ${
+                workstationMode === "complications"
+                  ? "bg-cyan-900/60 text-cyan-300 border border-cyan-500/25"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              <Activity className="w-3 h-3 text-cyan-400" />
+              Post-Op Hub
+            </button>
           </div>
         </div>
 
-        <div className="flex items-center space-x-3">
-          {/* Real-time offline feedback tag */}
-          <div className="bg-emerald-500/10 px-2.5 py-1 rounded text-[10px] flex items-center space-x-1.5 border border-emerald-500/20 font-mono text-emerald-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-            <span>SECURE OFFLINE SYSTEM</span>
+        {/* Middle: Fully Integrated Minimalistic Toolbar */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          
+          {/* 1. Case selection */}
+          <div className="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded border border-slate-800">
+            <span className="text-[9px] font-mono text-slate-500 font-bold uppercase">Case:</span>
+            <select
+              value={selectedCaseId}
+              onChange={(e) => setSelectedCaseId(e.target.value)}
+              className="bg-transparent text-xs text-slate-300 outline-none font-medium cursor-pointer max-w-[130px] border-none"
+            >
+              <option value="" className="bg-slate-950 text-slate-550">-- Select Patient Case --</option>
+              <option value="case-neutral" className="bg-slate-950 text-slate-300">Neutral Axis</option>
+              <option value="case-varus" className="bg-slate-950 text-slate-300">Severe Varus</option>
+              <option value="case-valgus" className="bg-slate-950 text-slate-300">Severe Valgus</option>
+              {customImage && <option value="custom" className="bg-slate-950 text-slate-300">Custom Upload</option>}
+            </select>
           </div>
 
-          <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 transition-colors">
-            <Upload className="w-3.5 h-3.5 text-slate-400" />
+          {/* 2. Alignment mode Segmented toggle */}
+          <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
+            <button
+              onClick={() => setAlignmentMode("HKA")}
+              className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-all ${
+                alignmentMode === "HKA"
+                  ? "bg-cyan-900/60 text-cyan-300 border border-cyan-500/25"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+              title="3-Point Mechanical Axes"
+            >
+              HKA Mode
+            </button>
+            <button
+              onClick={() => setAlignmentMode("FULL")}
+              className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-all ${
+                alignmentMode === "FULL"
+                  ? "bg-cyan-900/60 text-cyan-300 border border-cyan-500/25"
+                  : "text-slate-500 hover:text-slate-300"
+              }`}
+              title="13-Point Complete Landmarks"
+            >
+              13-Point
+            </button>
+          </div>
+
+          {/* 3. Auto-Mark Pipeline triggers */}
+          <div className="flex items-center bg-slate-950 p-0.5 rounded border border-slate-800">
+            <button
+              onClick={runOfflineLandmarkDetection}
+              disabled={isAnalyzing}
+              className="px-2 py-1 rounded text-[9px] font-bold uppercase text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1 disabled:opacity-40"
+              title="Trigger high-performance local edge projection landmark mapping"
+            >
+              <Sparkles className="w-3 h-3 text-cyan-400" />
+              <span>Auto-Mark</span>
+            </button>
+            <span className="text-slate-800 px-0.5">|</span>
+            <button
+              onClick={runCloudLandmarkDetection}
+              disabled={isAnalyzing}
+              className="px-2 py-1 rounded text-[9px] font-bold uppercase text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1 disabled:opacity-40"
+              title="Utilize external AI models for multi-landmark scanning"
+            >
+              <Activity className="w-3 h-3 text-cyan-400 animate-pulse" />
+              <span>AI Cloud-Mark</span>
+            </button>
+          </div>
+
+          {/* 4. Calibration Tool toggle */}
+          <button
+            onClick={startCalibration}
+            className={`px-2.5 py-1.5 rounded text-[9px] font-bold uppercase border transition-all flex items-center gap-1 ${
+              calibration.active
+                ? "bg-amber-950/80 text-amber-300 border-amber-500/30"
+                : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-900"
+            }`}
+            title="Calibrate visual pixels to real world physical mm"
+          >
+            <Ruler className="w-3.5 h-3.5 text-amber-400" />
+            <span>Calibrate</span>
+          </button>
+
+          {/* 5. Osteotomy Simulation toggle (Dynamic Hinge Feature!) */}
+          <button
+            onClick={() => setOsteotomyActive(!osteotomyActive)}
+            className={`px-2.5 py-1.5 rounded text-[9px] font-bold uppercase border transition-all flex items-center gap-1.5 ${
+              osteotomyActive
+                ? "bg-cyan-950 text-cyan-300 border-cyan-500/30 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
+                : "bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-900"
+            }`}
+            title="Enable digital osteotomy hinge cut planner"
+          >
+            <Scissors className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Osteotomy</span>
+          </button>
+        </div>
+
+        {/* Right Side: Primary Actions & Sidebar Toggles */}
+        <div className="flex items-center gap-2.5">
+          <label className="cursor-pointer bg-slate-950 hover:bg-slate-900 text-slate-300 border border-slate-800 px-3 py-1.5 rounded text-[11px] font-bold uppercase flex items-center gap-1.5 transition-colors">
+            <Upload className="w-3.5 h-3.5 text-slate-500" />
             <span>Upload X-Ray</span>
             <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
           </label>
@@ -1247,20 +1486,117 @@ export default function App() {
           <button 
             id="export-btn"
             onClick={exportScanogram}
-            className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-1.5 rounded text-xs font-semibold transition-all flex items-center gap-1.5 shadow"
+            className="bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1.5 rounded text-[11px] font-bold uppercase transition-all flex items-center gap-1.5 shadow"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Save Report</span>
           </button>
+
+          <button 
+            onClick={() => setShowSettings(true)}
+            className="p-1.5 rounded border bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-900 transition-all"
+            title="System Configuration Settings"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={() => setShowRightSidebar(!showRightSidebar)}
+            className={`p-1.5 rounded border transition-colors ${
+              showRightSidebar
+                ? "bg-cyan-950 border-cyan-500/20 text-cyan-300 hover:bg-cyan-900"
+                : "bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+            }`}
+            title={showRightSidebar ? "Hide Clinical Sidebar" : "Show Clinical Sidebar"}
+          >
+            <Sliders className="w-4 h-4" />
+          </button>
         </div>
       </nav>
 
-      <div className="flex flex-1 overflow-hidden relative">
+      {/* Dynamic Osteotomy Calibration & Correction Slider Drawer */}
+      {osteotomyActive && (
+        <div className="bg-slate-900 border-b border-slate-800 px-6 py-3 flex flex-wrap items-center justify-between gap-4 shadow-inner z-10">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5 bg-slate-950/80 px-2.5 py-1 rounded border border-slate-800">
+              <span className="text-[10px] font-mono font-semibold text-slate-550 uppercase">Hinge Location:</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setOsteotomyLeg("right")}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase transition-colors ${
+                    osteotomyLeg === "right" ? "bg-rose-500/20 text-rose-400 border border-rose-500/30" : "text-slate-550 hover:text-slate-300"
+                  }`}
+                >
+                  Right Leg
+                </button>
+                <button
+                  onClick={() => setOsteotomyLeg("left")}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase transition-colors ${
+                    osteotomyLeg === "left" ? "bg-blue-500/20 text-blue-400 border border-blue-500/30" : "text-slate-550 hover:text-slate-300"
+                  }`}
+                >
+                  Left Leg
+                </button>
+              </div>
+            </div>
+
+            <div className="text-[10px] text-slate-400 leading-normal max-w-sm">
+              <span className="text-cyan-400 font-semibold uppercase block text-[9px] font-mono">Interactive Osteotomy Planner</span>
+              Drag the <span className="text-cyan-300 font-semibold">HINGE</span> and <span className="text-amber-300 font-semibold">CUT END</span> markers on the canvas to orient your wedge bone cut axis.
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 flex-1 max-w-md">
+            <div className="flex-1 space-y-1">
+              <div className="flex justify-between text-[10px]">
+                <span className="font-mono text-slate-400 uppercase">Mechanical Wedge Angle:</span>
+                <span className="font-mono text-cyan-400 font-bold bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800">{correctionAngle > 0 ? `+${correctionAngle}` : correctionAngle}°</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCorrectionAngle(Math.max(-30, correctionAngle - 1))}
+                  className="w-5 h-5 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 flex items-center justify-center font-bold text-xs"
+                >
+                  -
+                </button>
+                <input
+                  type="range"
+                  min="-30"
+                  max="30"
+                  value={correctionAngle}
+                  onChange={(e) => setCorrectionAngle(parseInt(e.target.value))}
+                  className="flex-1 h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                />
+                <button
+                  onClick={() => setCorrectionAngle(Math.min(30, correctionAngle + 1))}
+                  className="w-5 h-5 rounded bg-slate-950 hover:bg-slate-800 text-slate-300 flex items-center justify-center font-bold text-xs"
+                >
+                  +
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setCorrectionAngle(0);
+              }}
+              className="px-2.5 py-1.5 rounded bg-slate-950 hover:bg-slate-850 text-[10px] font-bold uppercase text-slate-400 hover:text-slate-200 transition-colors border border-slate-800 self-end"
+            >
+              Reset Cut
+            </button>
+          </div>
+        </div>
+      )}
+
+      {workstationMode === "complications" ? (
+        <PostOpComplicationsHub />
+      ) : (
+        <div className="flex flex-col lg:flex-row flex-1 overflow-y-auto lg:overflow-hidden relative">
         
         {/* Main Work Surface */}
         <main 
           id="diagnostic-stage"
-          className="flex-1 bg-[#05070a] relative flex items-center justify-center p-4 overflow-auto min-h-[500px]"
+          className="flex-1 bg-[#05070a] relative flex items-center justify-center p-4 overflow-auto min-h-[480px] lg:min-h-[500px]"
           onMouseMove={handleMouseMove}
           onTouchMove={handleTouchMove}
           onMouseUp={handleMouseUp}
@@ -1290,8 +1626,9 @@ export default function App() {
               <select 
                 value={selectedCaseId} 
                 onChange={(e) => setSelectedCaseId(e.target.value)}
-                className="bg-slate-950 text-slate-200 border border-slate-800 rounded px-2 py-1 text-xs font-medium focus:outline-none focus:border-cyan-500 transition-colors"
+                className="bg-slate-950 text-slate-200 border border-slate-800 rounded px-2 py-1 text-xs font-medium focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer"
               >
+                <option value="" className="bg-slate-950 text-slate-500">-- Select Case --</option>
                 <option value="case-neutral">Patient Case A (Neutral)</option>
                 <option value="case-varus">Patient Case B (Bilateral Varus)</option>
                 <option value="case-valgus">Patient Case C (Bilateral Valgus)</option>
@@ -1305,22 +1642,53 @@ export default function App() {
             id="scanogram-viewer"
             ref={containerRef}
             onClick={handleContainerClick}
-            className="w-[410px] h-[750px] bg-slate-950 border border-slate-800/80 rounded-lg relative shadow-2xl flex flex-col select-none overflow-hidden"
+            className="w-[410px] h-[750px] bg-slate-950 border border-slate-800/80 rounded-lg relative shadow-2xl flex flex-col select-none overflow-hidden origin-center"
             style={{ 
-              transform: `scale(${zoomLevel})`,
+              transform: `scale(${zoomLevel * (windowWidth < 450 ? Math.max(0.65, (windowWidth - 32) / 410) : 1)})`,
               transition: "transform 0.15s cubic-bezier(0.4, 0, 0.2, 1)"
             }}
           >
-            <img 
-              ref={imageRef}
-              src={getCurrentImageUrl()} 
-              alt="Lower extremity scanogram" 
-              className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-95"
-              style={{ filter: "contrast(1.15) brightness(0.95) grayscale(1)" }}
-            />
+            {getCurrentImageUrl() ? (
+              <img 
+                ref={imageRef}
+                src={getCurrentImageUrl()} 
+                alt="Lower extremity scanogram" 
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-95"
+                style={{ filter: "contrast(1.15) brightness(0.95) grayscale(1)" }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-slate-950/95 z-10 m-2.5 border border-dashed border-slate-800/60 rounded-lg">
+                <div className="w-14 h-14 rounded-full bg-cyan-950/40 border border-cyan-800/25 flex items-center justify-center mb-5 text-cyan-400">
+                  <Maximize2 className="w-5 h-5" />
+                </div>
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider font-mono">Digital X-Ray Workstation</h3>
+                <p className="text-[10px] text-slate-400 mt-2 max-w-[240px] leading-relaxed">
+                  Please select a clinical case study or upload an orthopaedic scanogram to initialize the mechanical alignment engine.
+                </p>
+                <div className="mt-8 flex flex-col gap-2 w-full max-w-[200px] pointer-events-auto">
+                  <select 
+                    value={selectedCaseId} 
+                    onChange={(e) => setSelectedCaseId(e.target.value)}
+                    className="bg-slate-900 text-slate-200 border border-slate-800 rounded px-2.5 py-1.5 text-[11px] font-semibold focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer text-center"
+                  >
+                    <option value="" className="bg-slate-950 text-slate-500">-- Select Case --</option>
+                    <option value="case-neutral">Patient Case A (Neutral)</option>
+                    <option value="case-varus">Patient Case B (Bilateral Varus)</option>
+                    <option value="case-valgus">Patient Case C (Bilateral Valgus)</option>
+                  </select>
+                  <label className="cursor-pointer bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/20 text-cyan-400 hover:text-cyan-300 px-2.5 py-1.5 rounded text-[10px] font-bold uppercase flex items-center justify-center gap-1.5 transition-colors shadow-sm">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload X-Ray</span>
+                    <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                  </label>
+                </div>
+              </div>
+            )}
 
-            {/* Calibration Lines Overlay */}
-            {calibration.active && (
+            {selectedCaseId !== "" && (
+              <>
+                {/* Calibration Lines Overlay */}
+                {calibration.active && (
               <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
                 {calibration.point1 && (
                   <circle cx={`${calibration.point1.x}%`} cy={`${calibration.point1.y}%`} r="6" fill="#f59e0b" />
@@ -1350,54 +1718,81 @@ export default function App() {
                     {/* RIGHT LEG (viewer left) */}
                     {rightLeg.detected && (
                       <>
-                        <line x1={`${rightLeg.hip.x}%`} y1={`${rightLeg.hip.y}%`} x2={`${rightLeg.knee.x}%`} y2={`${rightLeg.knee.y}%`} stroke="#ef4444" strokeWidth="2" strokeDasharray="3" />
-                        <line x1={`${rightLeg.knee.x}%`} y1={`${rightLeg.knee.y}%`} x2={`${rightLeg.ankle.x}%`} y2={`${rightLeg.ankle.y}%`} stroke="#ef4444" strokeWidth="2" strokeDasharray="3" />
-                        <line x1={`${rightLeg.hip.x}%`} y1={`${rightLeg.hip.y}%`} x2={`${rightLeg.ankle.x}%`} y2={`${rightLeg.ankle.y}%`} stroke="rgba(239, 68, 68, 0.25)" strokeWidth="1" />
+                        <line x1={`${rightLegRotated.hip.x}%`} y1={`${rightLegRotated.hip.y}%`} x2={`${rightLegRotated.knee.x}%`} y2={`${rightLegRotated.knee.y}%`} stroke="#f43f5e" strokeWidth="1.25" strokeDasharray="3 2" />
+                        <line x1={`${rightLegRotated.knee.x}%`} y1={`${rightLegRotated.knee.y}%`} x2={`${rightLegRotated.ankle.x}%`} y2={`${rightLegRotated.ankle.y}%`} stroke="#f43f5e" strokeWidth="1.25" strokeDasharray="3 2" />
+                        <line x1={`${rightLegRotated.hip.x}%`} y1={`${rightLegRotated.hip.y}%`} x2={`${rightLegRotated.ankle.x}%`} y2={`${rightLegRotated.ankle.y}%`} stroke="rgba(244, 63, 94, 0.25)" strokeWidth="0.75" />
                       </>
                     )}
 
                     {/* LEFT LEG (viewer right) */}
                     {leftLeg.detected && (
                       <>
-                        <line x1={`${leftLeg.hip.x}%`} y1={`${leftLeg.hip.y}%`} x2={`${leftLeg.knee.x}%`} y2={`${leftLeg.knee.y}%`} stroke="#3b82f6" strokeWidth="2" strokeDasharray="3" />
-                        <line x1={`${leftLeg.knee.x}%`} y1={`${leftLeg.knee.y}%`} x2={`${leftLeg.ankle.x}%`} y2={`${leftLeg.ankle.y}%`} stroke="#3b82f6" strokeWidth="2" strokeDasharray="3" />
-                        <line x1={`${leftLeg.hip.x}%`} y1={`${leftLeg.hip.y}%`} x2={`${leftLeg.ankle.x}%`} y2={`${leftLeg.ankle.y}%`} stroke="rgba(59, 130, 246, 0.25)" strokeWidth="1" />
+                        <line x1={`${leftLegRotated.hip.x}%`} y1={`${leftLegRotated.hip.y}%`} x2={`${leftLegRotated.knee.x}%`} y2={`${leftLegRotated.knee.y}%`} stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="3 2" />
+                        <line x1={`${leftLegRotated.knee.x}%`} y1={`${leftLegRotated.knee.y}%`} x2={`${leftLegRotated.ankle.x}%`} y2={`${leftLegRotated.ankle.y}%`} stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="3 2" />
+                        <line x1={`${leftLegRotated.hip.x}%`} y1={`${leftLegRotated.hip.y}%`} x2={`${leftLegRotated.ankle.x}%`} y2={`${leftLegRotated.ankle.y}%`} stroke="rgba(56, 189, 248, 0.25)" strokeWidth="0.75" />
                       </>
                     )}
                   </>
                 ) : (
                   <>
                     {/* 13-point orthopaedic detailed visual vectors */}
-                    {points13["p-sym"] && (
+                    {points13Rotated["p-sym"] && (
                       <>
-                        <line x1={`${points13["p-sym"].x}%`} y1={`${points13["p-sym"].y}%`} x2={`${points13["r-fhc"].x}%`} y2={`${points13["r-fhc"].y}%`} stroke="#d946ef" strokeWidth="1.5" strokeDasharray="2" />
-                        <line x1={`${points13["p-sym"].x}%`} y1={`${points13["p-sym"].y}%`} x2={`${points13["l-fhc"].x}%`} y2={`${points13["l-fhc"].y}%`} stroke="#d946ef" strokeWidth="1.5" strokeDasharray="2" />
+                        <line x1={`${points13Rotated["p-sym"].x}%`} y1={`${points13Rotated["p-sym"].y}%`} x2={`${points13Rotated["r-fhc"].x}%`} y2={`${points13Rotated["r-fhc"].y}%`} stroke="#d946ef" strokeWidth="1" strokeDasharray="2" />
+                        <line x1={`${points13Rotated["p-sym"].x}%`} y1={`${points13Rotated["p-sym"].y}%`} x2={`${points13Rotated["l-fhc"].x}%`} y2={`${points13Rotated["l-fhc"].y}%`} stroke="#d946ef" strokeWidth="1" strokeDasharray="2" />
                       </>
                     )}
 
                     {/* Right Leg Full Model Skeleton lines */}
-                    <line x1={`${points13["r-fhc"].x}%`} y1={`${points13["r-fhc"].y}%`} x2={`${metrics13.right.kc.x}%`} y2={`${metrics13.right.kc.y}%`} stroke="#ef4444" strokeWidth="2" strokeDasharray="3" />
-                    <line x1={`${metrics13.right.tc_knee.x}%`} y1={`${metrics13.right.tc_knee.y}%`} x2={`${points13["r-tc"].x}%`} y2={`${points13["r-tc"].y}%`} stroke="#ef4444" strokeWidth="2" strokeDasharray="3" />
+                    <line x1={`${points13Rotated["r-fhc"].x}%`} y1={`${points13Rotated["r-fhc"].y}%`} x2={`${metrics13.right.kc.x}%`} y2={`${metrics13.right.kc.y}%`} stroke="#f43f5e" strokeWidth="1.25" strokeDasharray="3 2" />
+                    <line x1={`${metrics13.right.tc_knee.x}%`} y1={`${metrics13.right.tc_knee.y}%`} x2={`${points13Rotated["r-tc"].x}%`} y2={`${points13Rotated["r-tc"].y}%`} stroke="#f43f5e" strokeWidth="1.25" strokeDasharray="3 2" />
                     {/* Femoral joint line: LFC to MFC */}
-                    <line x1={`${points13["r-lfc"].x}%`} y1={`${points13["r-lfc"].y}%`} x2={`${points13["r-mfc"].x}%`} y2={`${points13["r-mfc"].y}%`} stroke="#facc15" strokeWidth="2.5" />
+                    <line x1={`${points13Rotated["r-lfc"].x}%`} y1={`${points13Rotated["r-lfc"].y}%`} x2={`${points13Rotated["r-mfc"].x}%`} y2={`${points13Rotated["r-mfc"].y}%`} stroke="#eab308" strokeWidth="1.5" />
                     {/* Tibial joint line: LTP to MTP */}
-                    <line x1={`${points13["r-ltp"].x}%`} y1={`${points13["r-ltp"].y}%`} x2={`${points13["r-mtp"].x}%`} y2={`${points13["r-mtp"].y}%`} stroke="#22d3ee" strokeWidth="2.5" />
+                    <line x1={`${points13Rotated["r-ltp"].x}%`} y1={`${points13Rotated["r-ltp"].y}%`} x2={`${points13Rotated["r-mtp"].x}%`} y2={`${points13Rotated["r-mtp"].y}%`} stroke="#06b6d4" strokeWidth="1.5" />
                     {/* Inter-joint link */}
-                    <line x1={`${metrics13.right.kc.x}%`} y1={`${metrics13.right.kc.y}%`} x2={`${metrics13.right.tc_knee.x}%`} y2={`${metrics13.right.tc_knee.y}%`} stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" />
+                    <line x1={`${metrics13.right.kc.x}%`} y1={`${metrics13.right.kc.y}%`} x2={`${metrics13.right.tc_knee.x}%`} y2={`${metrics13.right.tc_knee.y}%`} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
 
                     {/* Left Leg Full Model Skeleton lines */}
-                    <line x1={`${points13["l-fhc"].x}%`} y1={`${points13["l-fhc"].y}%`} x2={`${metrics13.left.kc.x}%`} y2={`${metrics13.left.kc.y}%`} stroke="#3b82f6" strokeWidth="2" strokeDasharray="3" />
-                    <line x1={`${metrics13.left.tc_knee.x}%`} y1={`${metrics13.left.tc_knee.y}%`} x2={`${points13["l-tc"].x}%`} y2={`${points13["l-tc"].y}%`} stroke="#3b82f6" strokeWidth="2" strokeDasharray="3" />
+                    <line x1={`${points13Rotated["l-fhc"].x}%`} y1={`${points13Rotated["l-fhc"].y}%`} x2={`${metrics13.left.kc.x}%`} y2={`${metrics13.left.kc.y}%`} stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="3 2" />
+                    <line x1={`${metrics13.left.tc_knee.x}%`} y1={`${metrics13.left.tc_knee.y}%`} x2={`${points13Rotated["l-tc"].x}%`} y2={`${points13Rotated["l-tc"].y}%`} stroke="#38bdf8" strokeWidth="1.25" strokeDasharray="3 2" />
                     {/* Femoral joint line: LFC to MFC */}
-                    <line x1={`${points13["l-lfc"].x}%`} y1={`${points13["l-lfc"].y}%`} x2={`${points13["l-mfc"].x}%`} y2={`${points13["l-mfc"].y}%`} stroke="#facc15" strokeWidth="2.5" />
+                    <line x1={`${points13Rotated["l-lfc"].x}%`} y1={`${points13Rotated["l-lfc"].y}%`} x2={`${points13Rotated["l-mfc"].x}%`} y2={`${points13Rotated["l-mfc"].y}%`} stroke="#eab308" strokeWidth="1.5" />
                     {/* Tibial joint line: LTP to MTP */}
-                    <line x1={`${points13["l-ltp"].x}%`} y1={`${points13["l-ltp"].y}%`} x2={`${points13["l-mtp"].x}%`} y2={`${points13["l-mtp"].y}%`} stroke="#22d3ee" strokeWidth="2.5" />
+                    <line x1={`${points13Rotated["l-ltp"].x}%`} y1={`${points13Rotated["l-ltp"].y}%`} x2={`${points13Rotated["l-mtp"].x}%`} y2={`${points13Rotated["l-mtp"].y}%`} stroke="#06b6d4" strokeWidth="1.5" />
                     {/* Inter-joint link */}
-                    <line x1={`${metrics13.left.kc.x}%`} y1={`${metrics13.left.kc.y}%`} x2={`${metrics13.left.tc_knee.x}%`} y2={`${metrics13.left.tc_knee.y}%`} stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" />
+                    <line x1={`${metrics13.left.kc.x}%`} y1={`${metrics13.left.kc.y}%`} x2={`${metrics13.left.tc_knee.x}%`} y2={`${metrics13.left.tc_knee.y}%`} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
                   </>
                 )}
               </svg>
             )}
+
+            {/* Osteotomy Simulation Overlay */}
+            {osteotomyActive && osteotomyPoints.length >= 2 && (() => {
+              const wedgePoint = rotatePoint(osteotomyPoints[1], osteotomyPoints[0], correctionAngle);
+              return (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none z-10" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  {/* Dynamic Wedge Polygon */}
+                  <polygon
+                    points={`${osteotomyPoints[0].x},${osteotomyPoints[0].y} ${osteotomyPoints[1].x},${osteotomyPoints[1].y} ${wedgePoint.x},${wedgePoint.y}`}
+                    fill={correctionAngle !== 0 ? "rgba(6, 182, 212, 0.22)" : "rgba(100, 116, 139, 0.08)"}
+                    stroke={correctionAngle !== 0 ? "#06b6d4" : "#64748b"}
+                    strokeWidth="0.3"
+                  />
+                  
+                  {/* Core Hinge Cut axis dashed line */}
+                  <line
+                    x1={osteotomyPoints[0].x}
+                    y1={osteotomyPoints[0].y}
+                    x2={osteotomyPoints[1].x}
+                    y2={osteotomyPoints[1].y}
+                    stroke="#eab308"
+                    strokeWidth="0.35"
+                    strokeDasharray="1.5 1"
+                  />
+                </svg>
+              );
+            })()}
 
             {/* Draggable Markers */}
             {alignmentMode === "HKA" ? (
@@ -1412,8 +1807,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "r-hip" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "r-hip" })}
                     >
-                      <div className="w-5 h-5 border border-red-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-lg hover:scale-125 transition-transform">
-                        <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-rose-500/80 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-rose-500 rounded-full"></div>
                       </div>
                     </div>
 
@@ -1424,8 +1819,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "r-knee" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "r-knee" })}
                     >
-                      <div className="w-6 h-6 border-2 border-green-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(34,197,94,0.3)] hover:scale-125 transition-transform">
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-cyan-400 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-cyan-400 rounded-full"></div>
                       </div>
                     </div>
 
@@ -1436,8 +1831,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "r-ankle" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "r-ankle" })}
                     >
-                      <div className="w-5 h-5 border border-red-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-lg hover:scale-125 transition-transform">
-                        <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-rose-500/80 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-rose-500 rounded-full"></div>
                       </div>
                     </div>
                   </>
@@ -1453,8 +1848,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "l-hip" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "l-hip" })}
                     >
-                      <div className="w-5 h-5 border border-blue-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-lg hover:scale-125 transition-transform">
-                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-blue-400 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-blue-400 rounded-full"></div>
                       </div>
                     </div>
 
@@ -1465,8 +1860,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "l-knee" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "l-knee" })}
                     >
-                      <div className="w-6 h-6 border-2 border-green-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(34,197,94,0.3)] hover:scale-125 transition-transform">
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-cyan-400 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-cyan-400 rounded-full"></div>
                       </div>
                     </div>
 
@@ -1477,8 +1872,8 @@ export default function App() {
                       onMouseDown={() => setActiveDrag({ mode: "HKA", pointId: "l-ankle" })}
                       onTouchStart={() => setActiveDrag({ mode: "HKA", pointId: "l-ankle" })}
                     >
-                      <div className="w-5 h-5 border border-blue-500 bg-slate-950/95 rounded-full flex items-center justify-center shadow-lg hover:scale-125 transition-transform">
-                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
+                      <div className="w-3.5 h-3.5 border border-blue-400 bg-slate-950/95 rounded-full flex items-center justify-center shadow-md hover:scale-125 transition-transform">
+                        <div className="w-1 h-1 bg-blue-400 rounded-full"></div>
                       </div>
                     </div>
                   </>
@@ -1501,18 +1896,53 @@ export default function App() {
                     }}
                   >
                     <div 
-                      className="w-[18px] h-[18px] bg-slate-950/90 rounded-full flex items-center justify-center shadow-lg border hover:scale-130 transition-transform"
+                      className="w-3 h-3 bg-slate-950/90 rounded-full flex items-center justify-center shadow-md border hover:scale-125 transition-transform"
                       style={{ borderColor: p.color }}
                       title={p.anatomicalName}
                     >
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color }} />
+                      <div className="w-1 h-1 rounded-full" style={{ backgroundColor: p.color }} />
                     </div>
                     {/* Tooltip Label */}
-                    <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700/80 px-1 py-0.5 rounded text-[8px] font-mono text-slate-200 opacity-60 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 pointer-events-none">
+                    <div className="absolute top-3.5 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-700/80 px-1 py-0.2 rounded text-[7px] font-mono text-slate-300 opacity-60 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 pointer-events-none">
                       {p.label}
                     </div>
                   </div>
                 ))}
+              </>
+            )}
+
+            {/* Draggable Osteotomy Cut Planners */}
+            {osteotomyActive && (
+              <>
+                {/* Hinge point handle (P1) */}
+                <div 
+                  className="absolute -translate-x-1/2 -translate-y-1/2 z-20 cursor-grab active:cursor-grabbing"
+                  style={{ left: `${osteotomyPoints[0].x}%`, top: `${osteotomyPoints[0].y}%` }}
+                  onMouseDown={() => setActiveDrag({ mode: "OSTEOTOMY", pointId: "ost-0" })}
+                  onTouchStart={() => setActiveDrag({ mode: "OSTEOTOMY", pointId: "ost-0" })}
+                >
+                  <div className="w-4 h-4 border border-cyan-400 bg-slate-950 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(6,182,212,0.4)] hover:scale-125 transition-transform">
+                    <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></div>
+                  </div>
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-slate-800 text-[8px] px-1 py-0.2 rounded font-mono text-cyan-300 pointer-events-none whitespace-nowrap z-20">
+                    HINGE
+                  </div>
+                </div>
+
+                {/* Cut Line End handle (P2) */}
+                <div 
+                  className="absolute -translate-x-1/2 -translate-y-1/2 z-20 cursor-grab active:cursor-grabbing"
+                  style={{ left: `${osteotomyPoints[1].x}%`, top: `${osteotomyPoints[1].y}%` }}
+                  onMouseDown={() => setActiveDrag({ mode: "OSTEOTOMY", pointId: "ost-1" })}
+                  onTouchStart={() => setActiveDrag({ mode: "OSTEOTOMY", pointId: "ost-1" })}
+                >
+                  <div className="w-4 h-4 border border-amber-400 bg-slate-950 rounded-full flex items-center justify-center shadow-[0_0_8px_rgba(245,158,11,0.4)] hover:scale-125 transition-transform">
+                    <div className="w-1.5 h-1.5 bg-amber-400 rounded-full"></div>
+                  </div>
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-slate-800 text-[8px] px-1 py-0.2 rounded font-mono text-amber-300 pointer-events-none whitespace-nowrap z-20">
+                    CUT END
+                  </div>
+                </div>
               </>
             )}
 
@@ -1598,7 +2028,9 @@ export default function App() {
                 </>
               )}
             </div>
-          </div>
+          </>
+        )}
+      </div>
 
           {/* Zoom/Pan Controllers (Floating bottom-right) */}
           <div className="absolute bottom-4 right-4 flex items-center gap-1.5 z-10">
@@ -1620,126 +2052,112 @@ export default function App() {
           </div>
         </main>
 
-        {/* Unified Clinical Workspace & Metric Controls (Right Sidebar) */}
-        <aside id="right-sidebar" className="w-96 border-l border-slate-800 bg-slate-950 flex flex-col shrink-0 overflow-y-auto max-h-[calc(100vh-4rem)] z-10">
-          
-          {/* Main Content Area */}
-          <div className="p-5 space-y-5 flex-1">
-            
-            {/* Calibration & Workspace Toolbar */}
-            <section className="bg-slate-900 border border-slate-800 rounded-lg p-3.5 space-y-3">
-              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 border-b border-slate-800 pb-2">
-                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                <span>WORKSPACE CONTROLS</span>
-              </h3>
+        {/* Floating Expand Tab when collapsed */}
+        {!showRightSidebar && (
+          <button
+            onClick={() => setShowRightSidebar(true)}
+            className="absolute top-4 right-0 bg-slate-900 border border-slate-800 border-r-0 hover:bg-slate-800 text-slate-400 p-2.5 rounded-l-md shadow-lg z-20 transition-all flex items-center justify-center gap-1 group text-[10px] font-mono"
+            title="Expand Clinical Insights"
+          >
+            <ChevronLeft className="w-4 h-4 text-cyan-400 animate-pulse" />
+            <span className="hidden group-hover:inline pr-1">Expand Insights</span>
+          </button>
+        )}
 
-              {/* Alignment Mode Selector */}
-              <div className="space-y-1">
-                <span className="text-[9px] font-mono font-bold text-slate-400 tracking-wider uppercase block">Alignment Mode</span>
-                <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded border border-slate-800">
+        {/* Unified Clinical Workspace & Metric Controls (Right Sidebar) */}
+        {showRightSidebar && (
+          <aside id="right-sidebar" className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-950 flex flex-col shrink-0 overflow-y-auto max-h-none lg:max-h-[calc(100vh-4rem)] z-10">
+            
+            {/* Sidebar header close button */}
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-900">
+              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Clinical Insights</span>
+              </h3>
+              <button 
+                onClick={() => setShowRightSidebar(false)}
+                className="p-1 hover:bg-slate-900 rounded border border-slate-800 hover:text-white text-slate-400 transition-all flex items-center gap-1 text-[9px] font-mono font-bold"
+                title="Collapse Panel"
+              >
+                <span>Collapse</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Main Content Area */}
+            <div className="p-5 space-y-5 flex-1">
+              {selectedCaseId === "" ? (
+                <div className="flex flex-col items-center justify-center py-16 px-4 text-center space-y-4 bg-slate-900/10 border border-slate-900/60 rounded-lg">
+                  <div className="w-11 h-11 rounded-full bg-cyan-950/40 border border-cyan-800/15 flex items-center justify-center text-cyan-400">
+                    <Sliders className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-slate-300 uppercase tracking-wide font-mono">No Active Case</p>
+                    <p className="text-[10px] text-slate-400 leading-relaxed max-w-[200px] mx-auto">
+                      Please select or upload a digital scanogram to begin real-time mechanical axis mapping.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Core Interactive Overlay and Reset Tools */}
+              <section className="bg-slate-900 border border-slate-800 rounded-lg p-3.5 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
                   <button 
-                    onClick={() => setAlignmentMode("HKA")}
-                    className={`py-1 rounded text-xs font-semibold text-center transition-colors ${
-                      alignmentMode === "HKA" 
-                        ? "bg-cyan-950/80 text-cyan-400 border border-cyan-500/20" 
-                        : "text-slate-400 hover:text-slate-200"
+                    onClick={() => setShowAxes(!showAxes)}
+                    className={`py-1.5 px-2 rounded text-[10px] font-medium border text-center transition-colors ${
+                      showAxes ? "bg-slate-850 text-cyan-400 border-slate-750" : "text-slate-500 border-transparent hover:text-slate-300"
                     }`}
                   >
-                    3-Pt HKA Mode
+                    Axes Overlay
                   </button>
                   <button 
-                    onClick={() => setAlignmentMode("FULL")}
-                    className={`py-1 rounded text-xs font-semibold text-center transition-colors ${
-                      alignmentMode === "FULL" 
-                        ? "bg-cyan-950/80 text-cyan-400 border border-cyan-500/20" 
-                        : "text-slate-400 hover:text-slate-200"
+                    onClick={() => setShowGrid(!showGrid)}
+                    className={`py-1.5 px-2 rounded text-[10px] font-medium border text-center transition-colors ${
+                      showGrid ? "bg-slate-850 text-cyan-400 border-slate-750" : "text-slate-500 border-transparent hover:text-slate-300"
                     }`}
                   >
-                    13-Pt Detailed
+                    Grid Map
                   </button>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <button 
-                  onClick={runOfflineLandmarkDetection}
-                  disabled={isAnalyzing}
-                  className={`py-2 px-2.5 rounded text-[11px] font-semibold border flex items-center justify-center gap-1 transition-all ${
-                    isAnalyzing 
-                      ? "bg-cyan-500/10 text-cyan-400/80 border-cyan-500/10 cursor-wait" 
-                      : "bg-slate-800/50 text-slate-300 border-slate-700/60 hover:bg-slate-800"
-                  }`}
-                  title="Detect mechanical joint centers offline using anatomical peak luma projection"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Offline Auto-Mark</span>
-                </button>
 
                 <button 
-                  onClick={runCloudLandmarkDetection}
-                  disabled={isAnalyzing}
-                  className={`py-2 px-2.5 rounded text-[11px] font-semibold border flex items-center justify-center gap-1 transition-all ${
-                    isAnalyzing 
-                      ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/20 animate-pulse cursor-wait" 
-                      : "bg-cyan-950/40 text-cyan-400 border-cyan-500/20 hover:bg-cyan-950/70"
-                  }`}
-                  title="Detect joint centers using the active Cloud AI pipeline (Gemini, OpenAI, Claude, Ollama)"
+                  onClick={resetMarkers}
+                  className="w-full py-1.5 bg-slate-800/55 hover:bg-slate-800 text-slate-300 rounded text-[10px] font-medium border border-slate-700/55 flex items-center justify-center gap-1 transition-all"
                 >
-                  <Activity className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
-                  <span>AI Cloud-Mark</span>
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset to Case Defaults</span>
                 </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={startCalibration}
-                  className={`py-2 px-3 rounded text-[11px] font-semibold border flex items-center justify-center gap-1.5 transition-all ${
-                    calibration.active 
-                      ? "bg-amber-500/20 text-amber-400 border-amber-500/40" 
-                      : "bg-slate-800/60 text-slate-300 border-slate-700/60 hover:bg-slate-800"
-                  }`}
-                >
-                  <Ruler className="w-3.5 h-3.5" />
-                  <span>Calibrate Scale</span>
-                </button>
-
-                <button 
-                  onClick={() => setShowSettings(true)}
-                  className="py-2 px-3 rounded text-[11px] font-semibold border bg-slate-800/60 text-slate-300 border-slate-700/60 hover:bg-slate-800 flex items-center justify-center gap-1.5 transition-all"
-                >
-                  <Settings className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>System Options</span>
-                </button>
-              </div>
+              </section>
 
               {/* Calibration subpanel */}
               {calibration.active && (
-                <div className="bg-slate-950 border border-amber-500/20 rounded p-2.5 space-y-2">
-                  <p className="text-[10px] text-amber-300 leading-normal">
+                <div className="bg-slate-900 border border-amber-500/25 rounded-lg p-3.5 space-y-2.5">
+                  <p className="text-[10px] text-amber-300 leading-normal font-mono uppercase tracking-wide text-[9px]">
                     {!calibration.point1 
-                      ? "1. Click first point on the X-ray's visual scale rulers." 
+                      ? "1. Click first point on visual scale ruler." 
                       : !calibration.point2 
-                      ? "2. Click second point to set reference distance." 
-                      : "✓ Calibration registered!"}
+                      ? "2. Click second point to register reference height." 
+                      : "✓ Ruler Scale Registered"}
                   </p>
                   {calibration.point1 && (
                     <div className="flex items-center justify-between gap-1.5 text-[10px]">
-                      <span className="text-slate-400">Target Height:</span>
+                      <span className="text-slate-400">Physical Length:</span>
                       <div className="flex items-center gap-1">
                         <input 
                           type="text" 
                           value={calibrationInput} 
                           onChange={(e) => handleCalibrationInput(e.target.value)}
-                          className="w-14 bg-slate-900 border border-slate-700 rounded text-center py-0.5 text-[10px] text-white font-mono"
+                          className="w-16 bg-slate-950 border border-slate-800 rounded text-center py-0.5 text-[10px] text-white font-mono"
                         />
-                        <span className="text-slate-500">mm</span>
+                        <span className="text-slate-500 font-mono">mm</span>
                       </div>
                     </div>
                   )}
                   {calibration.point2 && calibration.mmPerPixel && (
-                    <div className="text-[9px] text-emerald-400 font-mono pt-1 border-t border-slate-800 flex justify-between">
-                      <span>RULER SCALE FACTOR:</span>
-                      <span>{calibration.mmPerPixel.toFixed(3)} mm/px</span>
+                    <div className="text-[9px] text-emerald-400 font-mono pt-1.5 border-t border-slate-850 flex justify-between">
+                      <span>RULER SCALE:</span>
+                      <span>{calibration.mmPerPixel.toFixed(4)} mm/px</span>
                     </div>
                   )}
                 </div>
@@ -1747,200 +2165,175 @@ export default function App() {
 
               {/* 13-Point Anatomical Landmark Reference Guide */}
               {alignmentMode === "FULL" && (
-                <div className="bg-slate-950/80 border border-slate-800 p-3 rounded space-y-2 text-left">
+                <div className="bg-slate-900 border border-slate-800 p-3.5 rounded-lg space-y-2 text-left">
                   <span className="text-[9px] font-mono font-bold text-cyan-400 tracking-wider uppercase block">Anatomical Landmark Guide</span>
-                  <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1">
-                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-900 pb-1">
+                  <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-950 pb-1.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-purple-500 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-slate-200 font-mono">P-SYM</span>
-                        <p className="text-[9px] text-slate-400">Pubic Symphysis center. Serves as pelvis baseline.</p>
+                        <span className="font-semibold text-slate-200 font-mono text-[9px]">P-SYM</span>
+                        <p className="text-[9px] text-slate-400">Pubic Symphysis center. Baseline pelvis horizontal.</p>
                       </div>
                     </div>
-                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-900 pb-1">
+                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-950 pb-1.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-slate-200 font-mono">R/L FHC</span>
-                        <p className="text-[9px] text-slate-400">Femoral Head Centers. Anchors mechanical axes.</p>
+                        <span className="font-semibold text-slate-200 font-mono text-[9px]">R/L FHC</span>
+                        <p className="text-[9px] text-slate-400">Femoral Head Centers. Rotation origin of mechanical femur line.</p>
                       </div>
                     </div>
-                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-900 pb-1">
+                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-950 pb-1.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-yellow-500 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-slate-200 font-mono">LFC / MFC</span>
-                        <p className="text-[9px] text-slate-400">Lateral & Medial Femoral Condyles. Defines distal joint line.</p>
+                        <span className="font-semibold text-slate-200 font-mono text-[9px]">LFC / MFC</span>
+                        <p className="text-[9px] text-slate-400">Lateral & Medial Femoral Condyles. Defines distal femur joint vector.</p>
                       </div>
                     </div>
-                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-900 pb-1">
+                    <div className="flex items-start gap-1.5 text-[10px] leading-relaxed border-b border-slate-950 pb-1.5">
                       <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-slate-200 font-mono">LTP / MTP</span>
-                        <p className="text-[9px] text-slate-400">Lateral & Medial Tibial Plateaus. Proximal tibial joint line.</p>
+                        <span className="font-semibold text-slate-200 font-mono text-[9px]">LTP / MTP</span>
+                        <p className="text-[9px] text-slate-400">Lateral & Medial Tibial Plateaus. Defines proximal tibia joint vector.</p>
                       </div>
                     </div>
                     <div className="flex items-start gap-1.5 text-[10px] leading-relaxed">
                       <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-slate-200 font-mono">R/L TC</span>
-                        <p className="text-[9px] text-slate-400">Talus Centers. Bottom anchor of mechanical tibia axes.</p>
+                        <span className="font-semibold text-slate-200 font-mono text-[9px]">R/L TC</span>
+                        <p className="text-[9px] text-slate-400">Talus Centers. Bottom anchor of mechanical tibial line.</p>
                       </div>
                     </div>
                   </div>
-                  <p className="text-[8px] text-slate-500 leading-normal border-t border-slate-900 pt-1.5">
-                    💡 Drag any point to fine-tune alignments in real-time. Magnifying loupe will auto-activate to assist landmarking.
+                  <p className="text-[8px] text-slate-500 leading-normal border-t border-slate-950 pt-1.5">
+                    💡 Drag any point to fine-tune alignments. The loupe will auto-activate.
                   </p>
                 </div>
               )}
 
-              {/* Toggle controls */}
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-800/80">
-                <button 
-                  onClick={() => setShowAxes(!showAxes)}
-                  className={`py-1 px-2 rounded text-[10px] font-medium border text-center transition-colors ${
-                    showAxes ? "bg-slate-800 text-cyan-400 border-slate-700" : "text-slate-500 border-transparent hover:text-slate-300"
-                  }`}
-                >
-                  Axes Overlay
-                </button>
-                <button 
-                  onClick={() => setShowGrid(!showGrid)}
-                  className={`py-1 px-2 rounded text-[10px] font-medium border text-center transition-colors ${
-                    showGrid ? "bg-slate-800 text-cyan-400 border-slate-700" : "text-slate-500 border-transparent hover:text-slate-300"
-                  }`}
-                >
-                  Grid Map
-                </button>
-              </div>
-
-              <button 
-                onClick={resetMarkers}
-                className="w-full py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded text-[10px] font-medium border border-slate-700/50 flex items-center justify-center gap-1"
-              >
-                <RotateCcw className="w-3 h-3" />
-                <span>Reset to Standard Defaults</span>
-              </button>
-            </section>
-
-            {/* Offline notification banner */}
-            {offlineStatusMsg && (
-              <div className="bg-emerald-500/5 border border-emerald-500/20 p-2.5 rounded text-[10px] text-emerald-300 flex items-start gap-1.5">
-                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                <span>{offlineStatusMsg}</span>
-              </div>
-            )}
-
-            {analysisError && (
-              <div className="bg-red-500/5 border border-red-500/20 p-2.5 rounded text-[10px] text-red-400 flex items-start gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-                <span>{analysisError}</span>
-              </div>
-            )}
-
-            {/* Main Clinical Output Cards */}
-            <section className="space-y-3">
-              {/* Right Leg (Anatomical Right / Viewer Left) */}
-              <div className="bg-slate-900 border border-slate-800/80 rounded-lg p-4 relative overflow-hidden">
-                <div className="absolute top-2.5 right-3 text-[8px] font-mono font-bold bg-red-500/10 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded">
-                  ANATOMICAL RIGHT
+              {/* Offline notification banner */}
+              {offlineStatusMsg && (
+                <div className="bg-emerald-500/5 border border-emerald-500/15 p-2.5 rounded-lg text-[10px] text-emerald-300 flex items-start gap-1.5">
+                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  <span>{offlineStatusMsg}</span>
                 </div>
-                
-                <span className="text-[10px] text-slate-400 font-medium block">Mechanical HKA Angle</span>
-                <span className="text-4xl font-light font-mono text-white block mt-1 tracking-tight">
-                  {rightMetrics.hka.toFixed(1)}°
-                </span>
+              )}
 
-                <div className="mt-3.5 flex items-center justify-between border-t border-slate-800/80 pt-2.5">
-                  <span className="text-[9px] font-mono uppercase text-slate-500">Alignment</span>
-                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-bold ${
-                    rightMetrics.category === "NEUTRAL" 
-                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                      : "bg-red-500/10 text-red-400 border border-red-500/20"
-                  }`}>
-                    {rightMetrics.category} ({rightMetrics.devDegrees.toFixed(1)}°)
+              {analysisError && (
+                <div className="bg-red-500/5 border border-red-500/15 p-2.5 rounded-lg text-[10px] text-red-400 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                  <span>{analysisError}</span>
+                </div>
+              )}
+
+              {/* Main Clinical Output Cards */}
+              <section className="space-y-3">
+                {/* Right Leg (Anatomical Right / Viewer Left) */}
+                <div className="bg-slate-900 border border-slate-850 rounded-lg p-4 relative overflow-hidden">
+                  <div className="absolute top-2.5 right-3 text-[8px] font-mono font-bold bg-red-500/10 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded">
+                    ANATOMICAL RIGHT
+                  </div>
+                  
+                  <span className="text-[10px] text-slate-400 font-medium block">Mechanical HKA Angle</span>
+                  <span className="text-4xl font-light font-mono text-white block mt-1 tracking-tight">
+                    {rightMetrics.hka.toFixed(1)}°
                   </span>
+
+                  <div className="mt-3.5 flex items-center justify-between border-t border-slate-850 pt-2.5">
+                    <span className="text-[9px] font-mono uppercase text-slate-500">Alignment</span>
+                    <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-bold ${
+                      rightMetrics.category === "NEUTRAL" 
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                        : "bg-red-500/10 text-red-400 border border-red-500/20"
+                    }`}>
+                      {rightMetrics.category} ({rightMetrics.devDegrees.toFixed(1)}°)
+                    </span>
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase text-slate-500">Axis Deviation (MAD)</span>
+                    <span className="text-xs font-mono font-bold text-slate-200">
+                      {rightMetrics.mmDeviation.toFixed(1)} mm
+                    </span>
+                  </div>
                 </div>
 
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[9px] font-mono uppercase text-slate-500">Axis Deviation (MAD)</span>
-                  <span className="text-xs font-mono font-bold text-slate-200">
-                    {rightMetrics.mmDeviation.toFixed(1)} mm
+                {/* Left Leg (Anatomical Left / Viewer Right) */}
+                <div className="bg-slate-900 border border-slate-850 rounded-lg p-4 relative overflow-hidden">
+                  <div className="absolute top-2.5 right-3 text-[8px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">
+                    ANATOMICAL LEFT
+                  </div>
+                  
+                  <span className="text-[10px] text-slate-400 font-medium block">Mechanical HKA Angle</span>
+                  <span className="text-4xl font-light font-mono text-white block mt-1 tracking-tight">
+                    {leftMetrics.hka.toFixed(1)}°
                   </span>
+
+                  <div className="mt-3.5 flex items-center justify-between border-t border-slate-850 pt-2.5">
+                    <span className="text-[9px] font-mono uppercase text-slate-500">Alignment</span>
+                    <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-bold ${
+                      leftMetrics.category === "NEUTRAL" 
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                        : "bg-red-500/10 text-red-400 border border-red-500/20"
+                    }`}>
+                      {leftMetrics.category} ({leftMetrics.devDegrees.toFixed(1)}°)
+                    </span>
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[9px] font-mono uppercase text-slate-500">Axis Deviation (MAD)</span>
+                    <span className="text-xs font-mono font-bold text-slate-200">
+                      {leftMetrics.mmDeviation.toFixed(1)} mm
+                    </span>
+                  </div>
                 </div>
-              </div>
+              </section>
 
-              {/* Left Leg (Anatomical Left / Viewer Right) */}
-              <div className="bg-slate-900 border border-slate-800/80 rounded-lg p-4 relative overflow-hidden">
-                <div className="absolute top-2.5 right-3 text-[8px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">
-                  ANATOMICAL LEFT
-                </div>
-                
-                <span className="text-[10px] text-slate-400 font-medium block">Mechanical HKA Angle</span>
-                <span className="text-4xl font-light font-mono text-white block mt-1 tracking-tight">
-                  {leftMetrics.hka.toFixed(1)}°
-                </span>
-
-                <div className="mt-3.5 flex items-center justify-between border-t border-slate-800/80 pt-2.5">
-                  <span className="text-[9px] font-mono uppercase text-slate-500">Alignment</span>
-                  <span className={`text-[9px] font-mono px-2 py-0.5 rounded font-bold ${
-                    leftMetrics.category === "NEUTRAL" 
-                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                      : "bg-red-500/10 text-red-400 border border-red-500/20"
-                  }`}>
-                    {leftMetrics.category} ({leftMetrics.devDegrees.toFixed(1)}°)
-                  </span>
+              {/* Real-time Radiology Report Text Panel */}
+              <section className="bg-slate-900 border border-slate-850 rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-850 pb-2">
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                    <Info className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>LIVE RADIOLOGICAL REPORT</span>
+                  </h3>
+                  <button 
+                    onClick={copyToClipboard}
+                    className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                    title="Copy Report to Clipboard"
+                  >
+                    {copied ? (
+                      <span className="text-[9px] font-mono text-emerald-400">Copied</span>
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                  </button>
                 </div>
 
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="text-[9px] font-mono uppercase text-slate-500">Axis Deviation (MAD)</span>
-                  <span className="text-xs font-mono font-bold text-slate-200">
-                    {leftMetrics.mmDeviation.toFixed(1)} mm
-                  </span>
-                </div>
-              </div>
-            </section>
-
-            {/* Real-time Radiology Report Text Panel */}
-            <section className="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>LIVE RADIOLOGICAL REPORT</span>
-                </h3>
-                <button 
-                  onClick={copyToClipboard}
-                  className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
-                  title="Copy Report to Clipboard"
-                >
-                  {copied ? (
-                    <span className="text-[9px] font-mono text-emerald-400">Copied</span>
-                  ) : (
-                    <Copy className="w-3 h-3" />
-                  )}
-                </button>
-              </div>
-
-              <p className="text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-line text-left">
-                {clinicalObservation}
-              </p>
-            </section>
-          </div>
-
-          {/* Simple Bottom Patient Card */}
-          <div className="border-t border-slate-800/80 p-4 bg-slate-900/30 shrink-0">
-            <div className="flex items-center justify-between">
-              <div className="text-[10px]">
-                <p className="text-slate-500 font-mono uppercase tracking-widest text-[8px]">ACTIVE X-RAY ID</p>
-                <p className="text-slate-300 font-mono font-semibold mt-0.5">
-                  {selectedCaseId === "custom" ? customImageName.substring(0, 16) || "CUSTOM_XRAY.PNG" : "SCAN_99482_AX"}
+                <p className="text-[11px] font-mono text-slate-300 leading-relaxed whitespace-pre-line text-left">
+                  {clinicalObservation}
                 </p>
-              </div>
-              <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
-                <User className="w-4 h-4 text-slate-400" />
+              </section>
+                </>
+              )}
+            </div>
+
+            {/* Simple Bottom Patient Card */}
+            <div className="border-t border-slate-850 p-4 bg-slate-900/30 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="text-[10px]">
+                  <p className="text-slate-500 font-mono uppercase tracking-widest text-[8px]">ACTIVE X-RAY ID</p>
+                  <p className="text-slate-300 font-mono font-semibold mt-0.5">
+                    {selectedCaseId === "" ? "SCAN_PENDING" : selectedCaseId === "custom" ? customImageName.substring(0, 16) || "CUSTOM_XRAY.PNG" : "SCAN_99482_AX"}
+                  </p>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
+                  <User className="w-4 h-4 text-slate-400" />
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
-      </div>
+          </aside>
+        )}
+        </div>
+      )}
 
       {showSettings && (
         <SystemSettings onClose={() => setShowSettings(false)} />

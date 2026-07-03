@@ -108,3 +108,54 @@ export interface SecurityStatus {
   pendingRequests: PendingRequest[];
 }
 
+export interface PostOpScan {
+  id: string;
+  date: string;
+  label: string;
+  stage: number;
+  imageUrl: string;
+  boneUnion: number; // 0 - 100
+  osteolysis: "None" | "Mild" | "Severe";
+  cementation: "Adequate" | "Deficient" | "N/A";
+  loosening: "Stable" | "Incipient" | "High Risk";
+  complications: string[];
+  report: string;
+  findings?: {
+    name: string;
+    idNumber: string;
+    scanDate: string;
+    procedure: string;
+  };
+}
+
+export interface PostOpPatient {
+  id: string;
+  name: string;
+  age: number;
+  gender: string;
+  procedure: string;
+  scans: PostOpScan[];
+}
+
+export interface ComplicationRule {
+  id: string;
+  category: "Bone Union" | "Osteolysis" | "Cementation" | "Loosening" | "General";
+  triggerCondition: string; // "If cortical bridging is incomplete at 6 months"
+  classificationValue: string; // "Classify Bone Union as Delayed (15%)"
+  description: string;
+  createdAt: string;
+}
+
+export interface LearningLog {
+  id: string;
+  timestamp: string;
+  patientId: string;
+  patientName: string;
+  scanId: string;
+  scanLabel: string;
+  originalReport: string;
+  userCorrection: string;
+  status: "Active" | "Taught" | "Optimized";
+}
+
+

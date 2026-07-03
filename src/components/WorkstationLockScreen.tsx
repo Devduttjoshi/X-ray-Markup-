@@ -5,9 +5,10 @@ import { SecurityStatus } from "../types";
 interface WorkstationLockScreenProps {
   securityStatus: SecurityStatus;
   onAuthorized: () => void;
+  onBypass?: () => void;
 }
 
-export default function WorkstationLockScreen({ securityStatus, onAuthorized }: WorkstationLockScreenProps) {
+export default function WorkstationLockScreen({ securityStatus, onAuthorized, onBypass }: WorkstationLockScreenProps) {
   const [checking, setChecking] = useState(false);
   const [currentStatus, setCurrentStatus] = useState<SecurityStatus>(securityStatus);
 
@@ -88,9 +89,20 @@ export default function WorkstationLockScreen({ securityStatus, onAuthorized }: 
         </div>
 
         {/* Pulsing Poll Loader status */}
-        <div className="flex items-center justify-center gap-2 pt-2 text-[10px] font-mono text-slate-500">
-          <RefreshCw className={`w-3.5 h-3.5 ${checking ? "animate-spin text-cyan-400" : ""}`} />
-          <span>Polling workstation authorization status...</span>
+        <div className="flex flex-col items-center gap-3 pt-2">
+          <div className="flex items-center justify-center gap-2 text-[10px] font-mono text-slate-500">
+            <RefreshCw className={`w-3.5 h-3.5 ${checking ? "animate-spin text-cyan-400" : ""}`} />
+            <span>Polling workstation authorization status...</span>
+          </div>
+          
+          {onBypass && (
+            <button
+              onClick={onBypass}
+              className="mt-2 w-full py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold rounded transition-colors uppercase tracking-wider"
+            >
+              Bypass Security (Demo Mode)
+            </button>
+          )}
         </div>
       </div>
 
