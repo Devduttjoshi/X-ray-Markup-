@@ -3,6 +3,9 @@
 :: This script configures a Python virtual environment, installs dependencies,
 :: and sets up execution for the native offline desktop GUI application.
 
+:: Force the working directory to be the directory of this script to avoid path issues
+cd /d "%~dp0"
+
 echo =======================================================================
 echo 🏥 LOWER LIMB MECHANICAL ALIGNMENT ANALYZER - WINDOWS SETUP SCRIPT
 echo =======================================================================
@@ -94,16 +97,19 @@ echo =======================================================================
 echo 🎉 SETUP COMPLETED SUCCESSFULLY!
 echo =======================================================================
 echo.
-echo You can run the application locally in two ways:
+echo You can run the application locally using these dedicated launcher scripts:
 echo.
-echo OPTION A: Run via Python Script (Immediate launch)
+echo OPTION A: Run the Desktop GUI Workstation (Tkinter App)
 echo -----------------------------------------------------------------------
-echo 1. Run the application:
-echo    python lower_limb_analyzer.py
+echo Double-click:  run_desktop_app.bat
 echo.
-echo OPTION B: Compile into a single standalone Windows .exe file
+echo OPTION B: Run the Web Diagnostic Workstation (Flask + React Web App)
 echo -----------------------------------------------------------------------
-echo 1. Compile the app using PyInstaller (creates a double-clickable .exe):
+echo Double-click:  run_web_app.bat
+echo.
+echo OPTION C: Compile into a single standalone Windows .exe file
+echo -----------------------------------------------------------------------
+echo 1. Compile the app using PyInstaller:
 echo    pyinstaller --onefile --noconsole --name="Lower_Limb_Analyzer" lower_limb_analyzer.py
 echo 2. Find your single-file executable in the 'dist' subfolder as:
 echo    dist\Lower_Limb_Analyzer.exe
@@ -112,11 +118,11 @@ echo Press any key to run the application now (or Close this window)...
 pause
 
 :: Ask if they want to run the app right away
-set /p RUN_NOW="Do you want to run the application now? (y/n): "
+set /p RUN_NOW="Do you want to run the Desktop application now? (y/n): "
 if /i "%RUN_NOW%" equ "y" (
     echo.
     echo Starting Lower Limb Mechanical Alignment Analyzer...
-    python lower_limb_analyzer.py
+    call run_desktop_app.bat
 )
 
 exit /b 0

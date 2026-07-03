@@ -19,7 +19,8 @@ def get_resource_path(relative_path):
         # PyInstaller creates a temporary folder and stores its path in _MEIPASS
         base_path = sys._MEIPASS
     except AttributeError:
-        base_path = os.path.abspath(".")
+        # Resolve path relative to the script file folder to avoid working directory issues
+        base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
 # Initialize Flask app
@@ -30,7 +31,11 @@ app = Flask(__name__, static_folder=dist_path, static_url_path="")
 PORT = int(os.environ.get("PORT", 3000))
 
 # System Settings Persistence
-SETTINGS_FILE = os.path.join(os.path.abspath("."), "system_settings.json")
+if getattr(sys, 'frozen', False):
+    app_dir = os.path.dirname(sys.executable)
+else:
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(app_dir, "system_settings.json")
 
 def load_settings():
     try:
